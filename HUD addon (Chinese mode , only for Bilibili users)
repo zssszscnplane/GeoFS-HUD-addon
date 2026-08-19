@@ -1,0 +1,408 @@
+// ==UserScript==
+// @name         GeoFS 飞行HUD插件
+// @namespace    https://www.geo-fs.com/geofs.php?v=3.9
+// @version      5.7.0
+// @description  战斗机风格HUD | 姿态仪间隔可调 | 开源免费禁止倒卖 | 按L开关
+// @author       我是小猪05
+// @match        https://www.geo-fs.com/geofs.php?v=3.9
+// @grant        none
+// @run-at       document-end
+// @license      GPL-3.0
+// ==/UserScript==
+
+(function(){
+'use strict';
+
+// ==================== 版权与作者信息 ====================
+const AUTHOR_NAME = "我是小猪05";
+const AUTHOR_URL = "Bilibili: https://space.bilibili.com/3546746969917664";
+const COPYRIGHT = "© 哔哩哔哩 @我是小猪05 | 开源免费，禁止倒卖 | Bilibili: Bilibili: https://space.bilibili.com/3546746969917664";
+
+console.log(`%c${COPYRIGHT}`, 'color: #4caf50; font-size: 14px; font-weight: bold;');
+console.log(`%c🎁 三连打赏并关注UP主: ${AUTHOR_URL}`, 'color: #ff9800; font-size: 12px;');
+
+if(window.__GeoFS_HUD_Copyright && window.__GeoFS_HUD_Copyright !== COPYRIGHT) {
+    console.warn('⚠️ 脚本已被修改，请使用原版开源代码');
+}
+window.__GeoFS_HUD_Copyright = COPYRIGHT;
+
+// ==================== 配置 ====================
+let H={v:true,x:835,y:100,s:1.4,o:0.85,bg:false,spdScroll:1.5,altScroll:0.2,pitchStep:5,pre:'center_no_ads'};
+const P={
+    center_no_ads:{name:'无广告中央',getX:(w)=>835,y:100,s:1.4,spdScroll:1.5,altScroll:0.2,pitchStep:5,o:0.85,bg:false},
+    center_ads:{name:'有广告中央',getX:(w)=>w/2-400,y:80,s:1.0,spdScroll:1.5,altScroll:0.2,pitchStep:5,o:0.7,bg:true},
+    top_left:{name:'左上角',getX:()=>20,y:80,s:0.9,spdScroll:1.5,altScroll:0.2,pitchStep:5,o:0.7,bg:true}
+};
+
+let cv=null,ctx=null,panel=null;
+let lastVSg=0,lastGt=0,smoothG=1,lastAlert=null,lastAlertT=0;
+
+function ac(){return window.geofs?.aircraft?.instance}
+function isGnd(){try{return ac()?.groundContact===true}catch(e){return false}}
+function getX(p){let w=innerWidth;return P[p]?.getX?.(w)||835}
+
+function load(){
+    try{let s=localStorage.getItem('geoFS_hud');if(s)Object.assign(H,JSON.parse(s))}catch(e){}
+    if(H.pre&&P[H.pre]){
+        let preset=P[H.pre];
+        H.x=preset.getX?.(innerWidth)||preset.x;
+        H.y=preset.y;
+        H.s=preset.s;
+        H.spdScroll=preset.spdScroll;
+        H.altScroll=preset.altScroll;
+        H.pitchStep=preset.pitchStep;
+        H.o=preset.o;
+        H.bg=preset.bg;
+    } else {
+        H.x=835;H.y=100;H.s=1.4;H.spdScroll=1.5;H.altScroll=0.2;H.pitchStep=5;H.o=0.85;H.bg=false;H.pre='center_no_ads';
+    }
+}
+function save(){try{localStorage.setItem('geoFS_hud',JSON.stringify({x:H.x,y:H.y,s:H.s,o:H.o,bg:H.bg,spdScroll:H.spdScroll,altScroll:H.altScroll,pitchStep:H.pitchStep,pre:H.pre}))}catch(e){}}
+
+function spd(){try{let a=ac();return a?(a.velocityScalar||a.groundSpeed||0)*1.94384:0}catch(e){return 0}}
+function alt(){try{let a=ac();return a?.llaLocation?.[2]*3.28084||0}catch(e){return 0}}
+function vs(){try{let a=ac();return (a?.velocity?.[2]||0)*196.85}catch(e){return 0}}
+function pitch(){try{let a=ac();return -(a?.htr?.[1]||0)}catch(e){return 0}}
+function roll(){try{let a=ac();return a?.htr?.[2]||0}catch(e){return 0}}
+function hdg(){try{let a=ac(),h=a?.htr?.[0]||0;while(h<0)h+=360;while(h>=360)h-=360;return h}catch(e){return 0}}
+function gForce(){
+    let a=ac();if(!a)return 1;
+    let n=Date.now(),v=Math.abs(vs()),g=1;
+    if(lastGt){let dt=(n-lastGt)/1000;if(dt>0&&dt<0.2){let ch=(v-lastVSg)/196.85,acc=ch/dt;g=1+acc/9.8;if(g>5)g=5;if(g<0.5)g=0.5;smoothG=smoothG*0.6+g*0.4;g=smoothG}}
+    lastVSg=v;lastGt=n;return g;
+}
+function thrust(){try{let a=ac(),r=a?.engine?.rpm||0;return Math.min(100,Math.round(r/10000*100))}catch(e){return 0}}
+
+function alertChk(sp,a,vs,g){
+    let n=Date.now();
+    if(n-lastAlertT<3000)return lastAlert;
+    let alert=null,onGnd=isGnd();
+    if(!onGnd&&sp<60&&a<1000)alert='⚠️ 失速警告！';
+    else if(!onGnd&&a<500&&vs<-500)alert='⚠️ 近地警告！';
+    else if(!onGnd&&g>3.5&&a<5000)alert='⚠️ 过载警告！';
+    if(alert!==lastAlert){lastAlert=alert;lastAlertT=n}
+    return lastAlert;
+}
+
+function draw(){
+    if(!cv||!ctx||!H.v)return;
+    cv.width=innerWidth;cv.height=innerHeight;
+    ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.save();
+    ctx.translate(H.x,H.y);
+    ctx.scale(H.s,H.s);
+    ctx.globalAlpha=H.o;
+
+    let s=spd(),a=alt(),vs_=vs(),p=pitch(),r=roll(),hd=hdg(),g=gForce(),t=thrust();
+    let alert=alertChk(s,a,vs_,g);
+    let cx=300,cy=200;
+
+    // 倾斜角表盘（半透明）
+    ctx.save();
+    ctx.translate(cx,55);
+    ctx.strokeStyle='#0f0';
+    ctx.lineWidth=1.5;
+    ctx.fillStyle='#0f0';
+    ctx.font='11px monospace';
+    ctx.textAlign='center';
+    ctx.globalAlpha=H.o*0.9;
+    ctx.beginPath();ctx.ellipse(0,0,100,45,0,Math.PI,2*Math.PI);ctx.stroke();
+    for(let deg=-60;deg<=60;deg+=10){
+        let rad=deg*Math.PI/180,x=100*Math.sin(rad),y=-45*Math.cos(rad);
+        if(deg===0){
+            ctx.moveTo(x,y);ctx.lineTo(x*0.85,y*0.85);ctx.stroke();
+            ctx.fillText('0',x*0.7,y*0.7-3);
+        }else if(Math.abs(deg)%20===0){
+            ctx.moveTo(x,y);ctx.lineTo(x*0.8,y*0.8);ctx.stroke();
+            ctx.fillText(deg,x*0.65,y*0.65-3);
+        }else{
+            ctx.moveTo(x,y);ctx.lineTo(x*0.9,y*0.9);ctx.stroke();
+        }
+    }
+    let rc=Math.min(60,Math.max(-60,r)),rad=rc*Math.PI/180;
+    let ax=100*0.92*Math.sin(rad),ay=-45*0.92*Math.cos(rad);
+    ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(ax-6,ay+10);ctx.lineTo(ax+6,ay+10);ctx.fill();
+    ctx.restore();
+
+    // 空速带（优化显示）
+    ctx.save();
+    if(H.bg){ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(25,cy-100,100,200);}
+    ctx.fillStyle='#0f0';
+    ctx.font='14px monospace';
+    ctx.textAlign='right';
+    ctx.shadowBlur=0;
+    for(let sp=10;sp<=1000;sp+=10){
+        let y=cy+(s-sp)*H.spdScroll;
+        if(y<cy-80||y>cy+80)continue;
+        let a2=Math.max(0.4,1-Math.abs(sp-s)/50);
+        ctx.globalAlpha=H.o*a2;
+        ctx.fillText(sp,100,y+5);
+        ctx.fillRect(105,y,sp===Math.round(s/10)*10?35:20,1.5);
+    }
+    ctx.globalAlpha=H.o;
+    ctx.font='bold 34px monospace';
+    ctx.fillStyle='#0f0';
+    ctx.fillText(Math.round(s),50,cy+10);
+    ctx.font='12px monospace';
+    ctx.fillText('kt',115,cy+10);
+    ctx.restore();
+
+    // 高度带（优化显示）
+    ctx.save();
+    if(H.bg){ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(470,cy-120,110,240);}
+    ctx.fillStyle='#0f0';
+    ctx.font='14px monospace';
+    ctx.textAlign='left';
+    for(let al=200;al<=50000;al+=200){
+        let y=cy+(a-al)*H.altScroll;
+        if(y<cy-110||y>cy+110)continue;
+        let a2=Math.max(0.4,1-Math.abs(al-a)/200);
+        ctx.globalAlpha=H.o*a2;
+        ctx.fillText(al,500,y+5);
+        ctx.fillRect(475,y,al===Math.round(a/200)*200?35:20,1.5);
+    }
+    for(let al=100;al<=50000;al+=100){
+        if(al%200===0)continue;
+        let y=cy+(a-al)*H.altScroll;
+        if(y<cy-110||y>cy+110)continue;
+        ctx.fillRect(480,y,10,1);
+    }
+    ctx.globalAlpha=H.o;
+    ctx.font='bold 34px monospace';
+    ctx.fillText(Math.round(a),510,cy+10);
+    ctx.font='12px monospace';
+    ctx.fillText('ft',585,cy+10);
+    ctx.restore();
+
+    // 姿态仪（增强可视性）
+    ctx.save();
+    ctx.translate(cx,cy);
+    let pClamp=Math.min(90,Math.max(-90,p));
+    let horY=pClamp*2.2;
+    ctx.rotate(r*Math.PI/180);
+    ctx.beginPath();
+    ctx.strokeStyle='#0f0';
+    ctx.lineWidth=1.8;
+    ctx.font='bold 12px monospace';
+    ctx.fillStyle='#0f0';
+    ctx.textAlign='center';
+    ctx.shadowBlur=0;
+    
+    let step=H.pitchStep;
+    for(let d=-90;d<=90;d+=step){
+        let y=horY-d*2.2;
+        if(y<-160||y>160)continue;
+        let alpha=Math.max(0.2,1-Math.abs(d-pClamp)/40);
+        ctx.globalAlpha=H.o*alpha;
+        let len=28;
+        if(d%15===0)len=85;
+        else len=45;
+        ctx.moveTo(-len,y);
+        ctx.lineTo(len,y);
+        ctx.stroke();
+        if(d!==0&&d%15===0){
+            ctx.fillText(d.toString(),-len-18,y+4);
+            ctx.fillText(d.toString(),len+18,y+4);
+        }
+        if(d===0){
+            ctx.fillText('0',-75,y-5);
+            ctx.fillText('0',75,y-5);
+        }
+    }
+    ctx.globalAlpha=H.o;
+    ctx.restore();
+
+    // 十字架（增强视觉）
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.beginPath();
+    ctx.moveTo(-28,0);
+    ctx.lineTo(28,0);
+    ctx.moveTo(0,-28);
+    ctx.lineTo(0,28);
+    ctx.strokeStyle='#0f0';
+    ctx.lineWidth=2.5;
+    ctx.stroke();
+    ctx.globalCompositeOperation='destination-out';
+    ctx.beginPath();
+    ctx.arc(0,0,5,0,2*Math.PI);
+    ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    ctx.restore();
+
+    // 垂直速度/G力/推力
+    ctx.save();
+    ctx.font='13px monospace';
+    ctx.fillStyle='#0f0';
+    ctx.textAlign='left';
+    let vsSign=vs_>0?'+':'';
+    ctx.fillText(vsSign+Math.round(Math.abs(vs_))+' fpm',cx-150,cy+90);
+    ctx.fillText(g.toFixed(1)+' G',cx-150,cy+115);
+    ctx.fillText('推力 '+t+'%',cx+70,cy+115);
+    ctx.restore();
+
+    // 航向
+    ctx.save();
+    ctx.font='bold 22px monospace';
+    ctx.fillStyle='#0f0';
+    ctx.textAlign='center';
+    ctx.fillText(Math.round(hd).toString()+'°',cx+200,cy+90);
+    ctx.restore();
+
+    // 航向罗盘
+    ctx.save();
+    ctx.translate(cx,cy+180);
+    let cw=340;
+    if(H.bg){ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(-cw/2,-15,cw,30);}
+    ctx.font='11px monospace';
+    ctx.fillStyle='#0f0';
+    ctx.textAlign='center';
+    let sh=Math.floor(hd/10)*10-80;
+    for(let h=sh;h<=sh+160;h+=10){
+        let hm=h%360;if(hm<0)hm+=360;
+        let x=(h-hd)*2;
+        if(Math.abs(x)<cw/2)ctx.fillText(hm,x,0);
+    }
+    ctx.fillStyle='#0f0';
+    ctx.beginPath();ctx.moveTo(0,8);ctx.lineTo(-10,20);ctx.lineTo(10,20);ctx.fill();
+    ctx.restore();
+
+    // 版本信息
+    ctx.save();
+    ctx.font='10px monospace';
+    ctx.fillStyle='#0f0';
+    ctx.textAlign='left';
+    ctx.fillText('HUD v5.7',cx+200,cy+115);
+    ctx.restore();
+
+    if(alert){
+        ctx.save();
+        ctx.font='bold 20px monospace';
+        ctx.fillStyle='#f00';
+        ctx.shadowBlur=4;
+        ctx.shadowColor='#f00';
+        ctx.textAlign='center';
+        ctx.globalAlpha=1;
+        ctx.fillText(alert,cx,25);
+        ctx.restore();
+    }
+
+    ctx.restore();
+}
+
+function gr(){return 12;}
+
+function showPanel(){
+    if(panel){panel.remove();panel=null;return;}
+    panel=document.createElement('div');
+    panel.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(20,20,35,0.95);backdrop-filter:blur(12px);padding:20px;border-radius:12px;z-index:100010;min-width:380px;border:1px solid #4caf50;color:#fff;';
+    panel.innerHTML=`
+        <div style="text-align:center;margin-bottom:16px;"><span style="font-size:20px;">⚙️ HUD设置</span></div>
+        <div><label style="display:flex;justify-content:space-between;"><span>预设</span><select id="pre"><option value="center_no_ads">无广告中央</option><option value="center_ads">有广告中央</option><option value="top_left">左上角</option></select></label></div>
+        <div><label style="display:flex;justify-content:space-between;"><span>X坐标</span><input type="range" id="x_s" min="0" max="1200" step="10" style="flex:1;margin:0 10px;"><input type="number" id="x_n" style="width:80px;"></label></div>
+        <div><label style="display:flex;justify-content:space-between;"><span>Y坐标</span><input type="range" id="y_s" min="0" max="500" step="5" style="flex:1;margin:0 10px;"><input type="number" id="y_n" style="width:80px;"></label></div>
+        <div><label style="display:flex;justify-content:space-between;"><span>缩放</span><input type="range" id="s_s" min="0.5" max="2.0" step="0.05" style="flex:1;margin:0 10px;"><input type="number" id="s_n" step="0.05" style="width:80px;"></label></div>
+        <div><label style="display:flex;justify-content:space-between;"><span>透明度</span><input type="range" id="o_s" min="0.3" max="1.0" step="0.05" style="flex:1;margin:0 10px;"><input type="number" id="o_n" step="0.05" style="width:80px;"></label></div>
+        <div><label style="display:flex;justify-content:space-between;"><span>速度带滚动</span><input type="range" id="spd_s" min="0.5" max="3.0" step="0.1" style="flex:1;margin:0 10px;"><input type="number" id="spd_n" step="0.1" style="width:60px;"></label></div>
+        <div><label style="display:flex;justify-content:space-between;"><span>高度带滚动(x10)</span><input type="range" id="alt_s" min="0.5" max="5.0" step="0.1" style="flex:1;margin:0 10px;"><input type="number" id="alt_n" step="0.1" style="width:60px;"></label></div>
+        <div><label style="display:flex;justify-content:space-between;"><span>姿态仪间隔</span><input type="range" id="step_s" min="5" max="10" step="1" style="flex:1;margin:0 10px;"><input type="number" id="step_n" step="1" style="width:60px;"></label></div>
+        <div><label style="display:flex;justify-content:space-between;"><span>背景框</span><input type="checkbox" id="bg"></label></div>
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #444;text-align:center;font-size:12px;">
+            📌 哔哩哔哩 <a href="${AUTHOR_URL}" target="_blank" style="color:#4caf50;text-decoration:none;">@我是小猪05</a> 制作<br>
+            <span style="font-size:10px;color:#888;">开源免费 · 禁止倒卖 · 欢迎分享</span>
+        </div>
+        <div style="display:flex;gap:12px;margin-top:16px;">
+            <button id="reset" style="flex:1;padding:8px;background:#555;border:none;border-radius:6px;color:#fff;cursor:pointer;">重置</button>
+            <button id="save" style="flex:1;padding:8px;background:#4caf50;border:none;border-radius:6px;color:#fff;cursor:pointer;">保存并关闭</button>
+        </div>
+    `;
+    document.body.appendChild(panel);
+
+    let preS=document.getElementById('pre'),xS=document.getElementById('x_s'),xN=document.getElementById('x_n'),yS=document.getElementById('y_s'),yN=document.getElementById('y_n');
+    let sS=document.getElementById('s_s'),sN=document.getElementById('s_n'),oS=document.getElementById('o_s'),oN=document.getElementById('o_n');
+    let spdS=document.getElementById('spd_s'),spdN=document.getElementById('spd_n'),altS=document.getElementById('alt_s'),altN=document.getElementById('alt_n');
+    let stepS=document.getElementById('step_s'),stepN=document.getElementById('step_n');
+    let bgC=document.getElementById('bg');
+    
+    xS.value=H.x;xN.value=H.x;yS.value=H.y;yN.value=H.y;sS.value=H.s;sN.value=H.s;oS.value=H.o;oN.value=H.o;
+    spdS.value=H.spdScroll;spdN.value=H.spdScroll;
+    altS.value=H.altScroll*10;altN.value=H.altScroll*10;
+    stepS.value=H.pitchStep;stepN.value=H.pitchStep;
+    bgC.checked=H.bg;preS.value=H.pre;
+
+    function upd(){
+        H.x=parseInt(xS.value)||0;H.y=parseInt(yS.value)||100;H.s=parseFloat(sS.value)||1.4;H.o=parseFloat(oS.value)||0.85;
+        H.spdScroll=parseFloat(spdS.value)||1.5;
+        H.altScroll=parseFloat(altS.value)/10||0.2;
+        H.pitchStep=parseInt(stepS.value)||5;
+        H.bg=bgC.checked;
+        xN.value=H.x;yN.value=H.y;sN.value=H.s;oN.value=H.o;spdN.value=H.spdScroll;altN.value=H.altScroll*10;stepN.value=H.pitchStep;
+        H.pre='custom';
+        draw();
+    }
+    
+    xS.oninput=()=>{xN.value=xS.value;upd()};xN.oninput=()=>{xS.value=xN.value;upd()};
+    yS.oninput=()=>{yN.value=yS.value;upd()};yN.oninput=()=>{yS.value=yN.value;upd()};
+    sS.oninput=()=>{sN.value=sS.value;upd()};sN.oninput=()=>{sS.value=sN.value;upd()};
+    oS.oninput=()=>{oN.value=oS.value;upd()};oN.oninput=()=>{oS.value=oN.value;upd()};
+    spdS.oninput=()=>{spdN.value=spdS.value;upd()};spdN.oninput=()=>{spdS.value=spdN.value;upd()};
+    altS.oninput=()=>{altN.value=altS.value;upd()};altN.oninput=()=>{altS.value=altN.value;upd()};
+    stepS.oninput=()=>{stepN.value=stepS.value;upd()};stepN.oninput=()=>{stepS.value=stepN.value;upd()};
+    bgC.onchange=upd;
+    
+    preS.onchange=(e)=>{
+        let p=e.target.value;
+        if(P[p]){
+            let preset=P[p];
+            let nx=preset.getX?.(innerWidth)||preset.x;
+            xS.value=nx;xN.value=nx;
+            yS.value=preset.y;yN.value=preset.y;
+            sS.value=preset.s;sN.value=preset.s;
+            oS.value=preset.o;oN.value=preset.o;
+            spdS.value=preset.spdScroll;spdN.value=preset.spdScroll;
+            altS.value=preset.altScroll*10;altN.value=preset.altScroll*10;
+            stepS.value=preset.pitchStep;stepN.value=preset.pitchStep;
+            bgC.checked=preset.bg;
+            upd(); H.pre=p;
+        }
+    };
+    
+    document.getElementById('reset').onclick=()=>{
+        let def=P.center_no_ads;
+        let nx=def.getX?.(innerWidth)||def.x;
+        xS.value=nx;xN.value=nx;yS.value=def.y;yN.value=def.y;sS.value=def.s;sN.value=def.s;
+        oS.value=def.o;oN.value=def.o;spdS.value=def.spdScroll;spdN.value=def.spdScroll;
+        altS.value=def.altScroll*10;altN.value=def.altScroll*10;stepS.value=def.pitchStep;stepN.value=def.pitchStep;
+        bgC.checked=def.bg;
+        upd(); preS.value='center_no_ads'; H.pre='center_no_ads';
+    };
+    
+    document.getElementById('save').onclick=()=>{
+        save();
+        panel.remove();
+        panel=null;
+    };
+}
+
+function init(){
+    load();
+    cv=document.createElement('canvas');cv.id='geo-hud-canvas';
+    cv.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:99999;';
+    cv.width=innerWidth;cv.height=innerHeight;
+    ctx=cv.getContext('2d');document.body.appendChild(cv);
+    document.addEventListener('keydown',(e)=>{
+        let tag=document.activeElement?.tagName||'';
+        if(tag==='INPUT'||tag==='TEXTAREA')return;
+        if(e.key==='l'||e.key==='L'){
+            if(e.shiftKey){e.preventDefault();showPanel();}
+            else if(e.altKey){e.preventDefault();let ks=Object.keys(P),ci=ks.indexOf(H.pre),ni=(ci+1)%ks.length;let p=ks[ni];if(P[p]){let preset=P[p];H.x=preset.getX?.(innerWidth)||preset.x;H.y=preset.y;H.s=preset.s;H.spdScroll=preset.spdScroll;H.altScroll=preset.altScroll;H.pitchStep=preset.pitchStep;H.o=preset.o;H.bg=preset.bg;H.pre=p;save();}}
+            else{e.preventDefault();H.v=!H.v;if(cv)cv.style.display=H.v?'block':'none';}
+        }
+    });
+    window.addEventListener('resize',()=>{if(cv){cv.width=innerWidth;cv.height=innerHeight}if(H.pre&&P[H.pre]){H.x=P[H.pre].getX?.(innerWidth)||P[H.pre].x;save()}});
+    (function anim(){draw();requestAnimationFrame(anim)})();
+    console.log(`%c${COPYRIGHT}`, 'color: #4caf50; font-size: 14px; font-weight: bold;');
+    console.log(`%cGeoFS HUD v5.7 已启动 | L开关 | Shift+L设置 | Alt+L预设`, 'color: #ff9800; font-size: 12px;');
+}
+function wait(){ac()?init():setTimeout(wait,500)}wait();
+})();
