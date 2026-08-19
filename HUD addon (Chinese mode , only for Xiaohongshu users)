@@ -2,7 +2,7 @@
 // @name         GeoFS 飞行HUD插件
 // @namespace    https://www.geo-fs.com/geofs.php?v=3.9
 // @version      5.7.0
-// @description  战斗机风格HUD | 姿态仪间隔可调 | 开源免费禁止倒卖 | 按L开关
+// @description  A350风格HUD | 姿态仪间隔可调 | 开源免费禁止倒卖 | 按L开关
 // @author       起飞吧！凤凰牌飞机！
 // @match        https://www.geo-fs.com/geofs.php?v=3.9
 // @grant        none
